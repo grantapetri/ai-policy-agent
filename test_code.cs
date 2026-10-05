@@ -4,7 +4,7 @@ class Test
 {
     static void Main()
     {
-        string apiKey = "my-super-secret-key";
+        string apiKey = Environment.GetEnvironmentVariable("API_KEY");
 
         Console.WriteLine(apiKey);
     }
