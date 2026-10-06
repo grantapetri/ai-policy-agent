@@ -1,21 +1,23 @@
 using System;
 using System.Collections.Generic;
-using System.IO;
 using System.Net.Http;
 using System.Text;
-using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 
-namespace PolicyTestApplication
+namespace PolicyCompliantApplication
 {
-
     public class ApplicationSettings
     {
         public string ApplicationName { get; set; } = "DocumentProcessor";
         public int MaxDocumentSize { get; set; } = 5 * 1024 * 1024;
         public string LogDirectory { get; set; } = "logs";
         public int RequestTimeoutSeconds { get; set; } = 30;
+
+        public string ExternalServiceUsername { get; set; } = string.Empty;
+        public string ExternalServicePassword { get; set; } = string.Empty;
+        public string ExternalServiceBaseUrl { get; set; } =
+            "https://example.invalid";
     }
 
     public class DocumentRequest
@@ -31,209 +33,6 @@ namespace PolicyTestApplication
         public string Message { get; set; } = string.Empty;
         public int CharacterCount { get; set; }
         public DateTime ProcessedAtUtc { get; set; }
-    }
-
-    public class DocumentProcessor
-    {
-        private readonly ApplicationSettings _settings;
-
-        public DocumentProcessor(ApplicationSettings settings)
-        {
-            _settings = settings;
-        }
-
-        public DocumentResult Process(DocumentRequest request)
-        {
-            if (request == null)
-            {
-                return new DocumentResult
-                {
-                    Success = false,
-                    Message = "Request cannot be null.",
-                    ProcessedAtUtc = DateTime.UtcNow
-                };
-            }
-
-            if (string.IsNullOrWhiteSpace(request.DocumentName))
-            {
-                return new DocumentResult
-                {
-                    Success = false,
-                    Message = "Document name is required.",
-                    ProcessedAtUtc = DateTime.UtcNow
-                };
-            }
-
-            if (request.Content == null)
-            {
-                return new DocumentResult
-                {
-                    Success = false,
-                    Message = "Document content is required.",
-                    ProcessedAtUtc = DateTime.UtcNow
-                };
-            }
-
-            if (request.Content.Length > _settings.MaxDocumentSize)
-            {
-                return new DocumentResult
-                {
-                    Success = false,
-                    Message = "Document is too large.",
-                    ProcessedAtUtc = DateTime.UtcNow
-                };
-            }
-
-            if (request.RequestedBy == null ||
-                request.RequestedBy.Length > 200)
-            {
-                return new DocumentResult
-                {
-                    Success = false,
-                    Message = "Invalid requester.",
-                    ProcessedAtUtc = DateTime.UtcNow
-                };
-            }
-
-            var normalizedName = request.DocumentName.Trim();
-
-            if (normalizedName.Length > 255)
-            {
-                return new DocumentResult
-                {
-                    Success = false,
-                    Message = "Document name is too long.",
-                    ProcessedAtUtc = DateTime.UtcNow
-                };
-            }
-
-            Console.WriteLine(
-                $"Processing document '{normalizedName}' " +
-                $"requested by '{request.RequestedBy}'.");
-
-            return new DocumentResult
-            {
-                Success = true,
-                Message = "Document processed successfully.",
-                CharacterCount = request.Content.Length,
-                ProcessedAtUtc = DateTime.UtcNow
-            };
-        }
-    }
-
-    public class AuditLogger
-    {
-        private readonly string _directory;
-
-        public AuditLogger(string directory)
-        {
-            _directory = directory;
-
-            if (!Directory.Exists(_directory))
-            {
-                Directory.CreateDirectory(_directory);
-            }
-        }
-
-        public void Write(string eventName, string details)
-        {
-            if (string.IsNullOrWhiteSpace(eventName))
-            {
-                throw new ArgumentException(
-                    "Event name cannot be empty.",
-                    nameof(eventName));
-            }
-
-            if (details == null)
-            {
-                details = string.Empty;
-            }
-
-            var safeEventName = eventName
-                .Replace("/", "_")
-                .Replace("\\", "_")
-                .Replace(":", "_");
-
-            var fileName =
-                Path.Combine(
-                    _directory,
-                    $"{safeEventName}.log");
-
-            var line =
-                $"{DateTime.UtcNow:O} | {details}";
-
-            File.AppendAllText(
-                fileName,
-                line + Environment.NewLine);
-        }
-    }
-
-    public class ExternalServiceClient
-    {
-        private readonly HttpClient _client;
-
-        /*
-         * SEC-001 VIOLATION
-         *
-         * This credential is embedded directly in source code.
-         *
-         * It should instead be obtained from an environment variable,
-         * secret-management service, or another approved configuration
-         * mechanism.
-         */
-        private const string ApiUsername = "document-service";
-        private const string ApiPassword = "SuperSecretPassword123!";
-
-        public ExternalServiceClient()
-        {
-            _client = new HttpClient
-            {
-                Timeout = TimeSpan.FromSeconds(30)
-            };
-        }
-
-        public async Task<string> GetRemoteDocumentAsync(
-            string documentId,
-            CancellationToken cancellationToken)
-        {
-            if (string.IsNullOrWhiteSpace(documentId))
-            {
-                throw new ArgumentException(
-                    "Document ID is required.",
-                    nameof(documentId));
-            }
-
-            if (documentId.Length > 100)
-            {
-                throw new ArgumentException(
-                    "Document ID is too long.",
-                    nameof(documentId));
-            }
-
-            var request = new HttpRequestMessage(
-                HttpMethod.Get,
-                $"https://example.invalid/api/documents/{Uri.EscapeDataString(documentId)}");
-
-            var credentials =
-                Convert.ToBase64String(
-                    Encoding.UTF8.GetBytes(
-                        $"{ApiUsername}:{ApiPassword}"));
-
-            request.Headers.Authorization =
-                new System.Net.Http.Headers.AuthenticationHeaderValue(
-                    "Basic",
-                    credentials);
-
-            using var response =
-                await _client.SendAsync(
-                    request,
-                    cancellationToken);
-
-            response.EnsureSuccessStatusCode();
-
-            return await response.Content.ReadAsStringAsync(
-                cancellationToken);
-        }
     }
 
     public class ConfigurationLoader
@@ -277,20 +76,289 @@ namespace PolicyTestApplication
                 settings.LogDirectory = logDirectory;
             }
 
+            // SEC-001:
+            // Credentials are loaded from the environment instead of
+            // being embedded in source code.
+            var username =
+                Environment.GetEnvironmentVariable(
+                    "DOCUMENT_SERVICE_USERNAME");
+
+            var password =
+                Environment.GetEnvironmentVariable(
+                    "DOCUMENT_SERVICE_PASSWORD");
+
+            if (string.IsNullOrWhiteSpace(username))
+            {
+                throw new InvalidOperationException(
+                    "DOCUMENT_SERVICE_USERNAME is not configured.");
+            }
+
+            if (string.IsNullOrWhiteSpace(password))
+            {
+                throw new InvalidOperationException(
+                    "DOCUMENT_SERVICE_PASSWORD is not configured.");
+            }
+
+            settings.ExternalServiceUsername = username;
+            settings.ExternalServicePassword = password;
+
+            var serviceUrl =
+                Environment.GetEnvironmentVariable(
+                    "DOCUMENT_SERVICE_URL");
+
+            if (!string.IsNullOrWhiteSpace(serviceUrl) &&
+                Uri.TryCreate(
+                    serviceUrl,
+                    UriKind.Absolute,
+                    out var parsedUri) &&
+                (parsedUri.Scheme == Uri.UriSchemeHttps))
+            {
+                settings.ExternalServiceBaseUrl =
+                    parsedUri.ToString().TrimEnd('/');
+            }
+
             return settings;
         }
     }
 
-    public class DocumentRepository
+    public class DocumentProcessor
     {
-        private readonly Dictionary<string, string> _documents =
-            new Dictionary<string, string>(
-                StringComparer.OrdinalIgnoreCase);
+        private readonly ApplicationSettings _settings;
 
-        public void Save(
-            string documentId,
-            string content)
+        public DocumentProcessor(
+            ApplicationSettings settings)
         {
+            _settings = settings
+                ?? throw new ArgumentNullException(
+                    nameof(settings));
+        }
+
+        public DocumentResult Process(
+            DocumentRequest request)
+        {
+            if (request == null)
+            {
+                return Failure(
+                    "Request cannot be null.");
+            }
+
+            if (string.IsNullOrWhiteSpace(
+                request.DocumentName))
+            {
+                return Failure(
+                    "Document name is required.");
+            }
+
+            if (request.DocumentName.Length > 255)
+            {
+                return Failure(
+                    "Document name is too long.");
+            }
+
+            if (request.Content == null)
+            {
+                return Failure(
+                    "Document content is required.");
+            }
+
+            if (request.Content.Length >
+                _settings.MaxDocumentSize)
+            {
+                return Failure(
+                    "Document is too large.");
+            }
+
+            if (string.IsNullOrWhiteSpace(
+                request.RequestedBy))
+            {
+                return Failure(
+                    "Requester is required.");
+            }
+
+            if (request.RequestedBy.Length > 200)
+            {
+                return Failure(
+                    "Requester value is too long.");
+            }
+
+            return new DocumentResult
+            {
+                Success = true,
+                Message =
+                    "Document processed successfully.",
+                CharacterCount =
+                    request.Content.Length,
+                ProcessedAtUtc =
+                    DateTime.UtcNow
+            };
+        }
+
+        private static DocumentResult Failure(
+            string message)
+        {
+            return new DocumentResult
+            {
+                Success = false,
+                Message = message,
+                ProcessedAtUtc = DateTime.UtcNow
+            };
+        }
+    }
+
+    public class AuditLogger
+    {
+        private readonly string _directory;
+
+        public AuditLogger(string directory)
+        {
+            if (string.IsNullOrWhiteSpace(directory))
+            {
+                throw new ArgumentException(
+                    "Log directory is required.",
+                    nameof(directory));
+            }
+
+            _directory = directory;
+
+            if (!DirectoryExists(_directory))
+            {
+                System.IO.Directory.CreateDirectory(
+                    _directory);
+            }
+        }
+
+        public void Write(
+            string eventName,
+            string details)
+        {
+            if (string.IsNullOrWhiteSpace(eventName))
+            {
+                throw new ArgumentException(
+                    "Event name cannot be empty.",
+                    nameof(eventName));
+            }
+
+            if (eventName.Length > 100)
+            {
+                throw new ArgumentException(
+                    "Event name is too long.",
+                    nameof(eventName));
+            }
+
+            details ??= string.Empty;
+
+            var safeEventName =
+                SanitizeFileName(eventName);
+
+            var fileName =
+                System.IO.Path.Combine(
+                    _directory,
+                    $"{safeEventName}.log");
+
+            var line =
+                $"{DateTime.UtcNow:O} | {details}";
+
+            System.IO.File.AppendAllText(
+                fileName,
+                line + Environment.NewLine);
+        }
+
+        private static string SanitizeFileName(
+            string value)
+        {
+            var invalid =
+                System.IO.Path.GetInvalidFileNameChars();
+
+            var builder =
+                new StringBuilder(value.Length);
+
+            foreach (var character in value)
+            {
+                if (Array.IndexOf(
+                        invalid,
+                        character) >= 0)
+                {
+                    builder.Append('_');
+                }
+                else
+                {
+                    builder.Append(character);
+                }
+            }
+
+            return builder.ToString();
+        }
+
+        private static bool DirectoryExists(
+            string path)
+        {
+            return System.IO.Directory.Exists(path);
+        }
+    }
+
+    public class ExternalServiceClient
+    {
+        private readonly HttpClient _client;
+        private readonly string _username;
+        private readonly string _password;
+        private readonly Uri _baseUri;
+
+        public ExternalServiceClient(
+            ApplicationSettings settings)
+        {
+            if (settings == null)
+            {
+                throw new ArgumentNullException(
+                    nameof(settings));
+            }
+
+            if (string.IsNullOrWhiteSpace(
+                settings.ExternalServiceUsername))
+            {
+                throw new InvalidOperationException(
+                    "External service username is not configured.");
+            }
+
+            if (string.IsNullOrWhiteSpace(
+                settings.ExternalServicePassword))
+            {
+                throw new InvalidOperationException(
+                    "External service password is not configured.");
+            }
+
+            if (!Uri.TryCreate(
+                    settings.ExternalServiceBaseUrl,
+                    UriKind.Absolute,
+                    out var uri) ||
+                uri.Scheme != Uri.UriSchemeHttps)
+            {
+                throw new InvalidOperationException(
+                    "External service URL must be a valid HTTPS URL.");
+            }
+
+            _username =
+                settings.ExternalServiceUsername;
+
+            _password =
+                settings.ExternalServicePassword;
+
+            _baseUri = uri;
+
+            _client = new HttpClient
+            {
+                Timeout =
+                    TimeSpan.FromSeconds(
+                        settings.RequestTimeoutSeconds)
+            };
+        }
+
+        public async Task<string>
+            GetRemoteDocumentAsync(
+                string documentId,
+                CancellationToken cancellationToken)
+        {
+            // SEC-003:
+            // Validate user-controlled document ID before use.
             if (string.IsNullOrWhiteSpace(documentId))
             {
                 throw new ArgumentException(
@@ -305,13 +373,64 @@ namespace PolicyTestApplication
                     nameof(documentId));
             }
 
+            var encodedId =
+                Uri.EscapeDataString(documentId);
+
+            var requestUri =
+                new Uri(
+                    _baseUri,
+                    $"/api/documents/{encodedId}");
+
+            using var request =
+                new HttpRequestMessage(
+                    HttpMethod.Get,
+                    requestUri);
+
+            var credentials =
+                Convert.ToBase64String(
+                    Encoding.UTF8.GetBytes(
+                        $"{_username}:{_password}"));
+
+            request.Headers.Authorization =
+                new System.Net.Http.Headers
+                    .AuthenticationHeaderValue(
+                        "Basic",
+                        credentials);
+
+            using var response =
+                await _client.SendAsync(
+                    request,
+                    cancellationToken);
+
+            response.EnsureSuccessStatusCode();
+
+            return await response.Content
+                .ReadAsStringAsync(
+                    cancellationToken);
+        }
+    }
+
+    public class DocumentRepository
+    {
+        private readonly Dictionary<string, string>
+            _documents =
+                new Dictionary<string, string>(
+                    StringComparer.OrdinalIgnoreCase);
+
+        public void Save(
+            string documentId,
+            string content)
+        {
+            ValidateDocumentId(documentId);
+
             if (content == null)
             {
                 throw new ArgumentNullException(
                     nameof(content));
             }
 
-            if (content.Length > 10 * 1024 * 1024)
+            if (content.Length >
+                10 * 1024 * 1024)
             {
                 throw new ArgumentException(
                     "Document is too large.",
@@ -327,12 +446,7 @@ namespace PolicyTestApplication
         {
             content = string.Empty;
 
-            if (string.IsNullOrWhiteSpace(documentId))
-            {
-                return false;
-            }
-
-            if (documentId.Length > 100)
+            if (!IsValidDocumentId(documentId))
             {
                 return false;
             }
@@ -342,9 +456,10 @@ namespace PolicyTestApplication
                 out content);
         }
 
-        public bool Delete(string documentId)
+        public bool Delete(
+            string documentId)
         {
-            if (string.IsNullOrWhiteSpace(documentId))
+            if (!IsValidDocumentId(documentId))
             {
                 return false;
             }
@@ -352,9 +467,29 @@ namespace PolicyTestApplication
             return _documents.Remove(documentId);
         }
 
-        public IReadOnlyCollection<string> GetDocumentIds()
+        public IReadOnlyCollection<string>
+            GetDocumentIds()
         {
             return _documents.Keys;
+        }
+
+        private static void ValidateDocumentId(
+            string documentId)
+        {
+            if (!IsValidDocumentId(documentId))
+            {
+                throw new ArgumentException(
+                    "Invalid document ID.",
+                    nameof(documentId));
+            }
+        }
+
+        private static bool IsValidDocumentId(
+            string documentId)
+        {
+            return
+                !string.IsNullOrWhiteSpace(documentId) &&
+                documentId.Length <= 100;
         }
     }
 
@@ -369,31 +504,30 @@ namespace PolicyTestApplication
             DocumentRepository repository,
             AuditLogger logger)
         {
-            _processor = processor;
-            _repository = repository;
-            _logger = logger;
+            _processor =
+                processor
+                ?? throw new ArgumentNullException(
+                    nameof(processor));
+
+            _repository =
+                repository
+                ?? throw new ArgumentNullException(
+                    nameof(repository));
+
+            _logger =
+                logger
+                ?? throw new ArgumentNullException(
+                    nameof(logger));
         }
 
         public DocumentResult CreateDocument(
             string id,
             DocumentRequest request)
         {
-            if (string.IsNullOrWhiteSpace(id))
+            if (!IsValidDocumentId(id))
             {
-                return new DocumentResult
-                {
-                    Success = false,
-                    Message = "Document ID is required."
-                };
-            }
-
-            if (id.Length > 100)
-            {
-                return new DocumentResult
-                {
-                    Success = false,
-                    Message = "Document ID is too long."
-                };
+                return Failure(
+                    "Invalid document ID.");
             }
 
             var result =
@@ -422,14 +556,10 @@ namespace PolicyTestApplication
             return result;
         }
 
-        public bool DeleteDocument(string id)
+        public bool DeleteDocument(
+            string id)
         {
-            if (string.IsNullOrWhiteSpace(id))
-            {
-                return false;
-            }
-
-            if (id.Length > 100)
+            if (!IsValidDocumentId(id))
             {
                 return false;
             }
@@ -446,6 +576,26 @@ namespace PolicyTestApplication
 
             return deleted;
         }
+
+        private static bool IsValidDocumentId(
+            string id)
+        {
+            return
+                !string.IsNullOrWhiteSpace(id) &&
+                id.Length <= 100;
+        }
+
+        private static DocumentResult Failure(
+            string message)
+        {
+            return new DocumentResult
+            {
+                Success = false,
+                Message = message,
+                ProcessedAtUtc =
+                    DateTime.UtcNow
+            };
+        }
     }
 
     public class CommandLineInterface
@@ -455,7 +605,10 @@ namespace PolicyTestApplication
         public CommandLineInterface(
             ApplicationService service)
         {
-            _service = service;
+            _service =
+                service
+                ?? throw new ArgumentNullException(
+                    nameof(service));
         }
 
         public void Run()
@@ -523,39 +676,15 @@ namespace PolicyTestApplication
             var id =
                 Console.ReadLine();
 
-            if (string.IsNullOrWhiteSpace(id))
-            {
-                Console.WriteLine(
-                    "Document ID is required.");
-
-                return;
-            }
-
             Console.Write("Document name: ");
 
             var name =
                 Console.ReadLine();
 
-            if (string.IsNullOrWhiteSpace(name))
-            {
-                Console.WriteLine(
-                    "Document name is required.");
-
-                return;
-            }
-
             Console.Write("Requested by: ");
 
             var requestedBy =
                 Console.ReadLine();
-
-            if (string.IsNullOrWhiteSpace(requestedBy))
-            {
-                Console.WriteLine(
-                    "Requester is required.");
-
-                return;
-            }
 
             Console.WriteLine(
                 "Enter document content:");
@@ -563,25 +692,22 @@ namespace PolicyTestApplication
             var content =
                 Console.ReadLine();
 
-            if (content == null)
-            {
-                Console.WriteLine(
-                    "Content is required.");
-
-                return;
-            }
-
             var request =
                 new DocumentRequest
                 {
-                    DocumentName = name,
-                    RequestedBy = requestedBy,
-                    Content = content
+                    DocumentName =
+                        name ?? string.Empty,
+
+                    RequestedBy =
+                        requestedBy ?? string.Empty,
+
+                    Content =
+                        content ?? string.Empty
                 };
 
             var result =
                 _service.CreateDocument(
-                    id,
+                    id ?? string.Empty,
                     request);
 
             Console.WriteLine(
@@ -616,72 +742,66 @@ namespace PolicyTestApplication
 
     public static class Program
     {
-        public static async Task Main(
+        public static void Main(
             string[] args)
         {
-            var configurationLoader =
-                new ConfigurationLoader();
-
-            var settings =
-                configurationLoader.Load();
-
-            var logger =
-                new AuditLogger(
-                    settings.LogDirectory);
-
-            logger.Write(
-                "application",
-                "Application starting.");
-
-            var repository =
-                new DocumentRepository();
-
-            var processor =
-                new DocumentProcessor(
-                    settings);
-
-            var service =
-                new ApplicationService(
-                    processor,
-                    repository,
-                    logger);
-
-            var cli =
-                new CommandLineInterface(
-                    service);
-
             try
             {
+                var configurationLoader =
+                    new ConfigurationLoader();
+
+                var settings =
+                    configurationLoader.Load();
+
+                var logger =
+                    new AuditLogger(
+                        settings.LogDirectory);
+
+                logger.Write(
+                    "application",
+                    "Application starting.");
+
+                var repository =
+                    new DocumentRepository();
+
+                var processor =
+                    new DocumentProcessor(
+                        settings);
+
+                var service =
+                    new ApplicationService(
+                        processor,
+                        repository,
+                        logger);
+
+                var externalClient =
+                    new ExternalServiceClient(
+                        settings);
+
+                // The client is constructed successfully using
+                // externally supplied credentials.
+                _ = externalClient;
+
+                var cli =
+                    new CommandLineInterface(
+                        service);
+
                 cli.Run();
 
                 logger.Write(
                     "application",
                     "Application stopped normally.");
             }
-            catch (Exception ex)
+            catch (InvalidOperationException ex)
             {
-                logger.Write(
-                    "application-errors",
-                    $"Unhandled exception: {ex.Message}");
-
                 Console.Error.WriteLine(
-                    "An unexpected error occurred.");
+                    $"Configuration error: {ex.Message}");
             }
-
-            /*
-             * The external client is instantiated here to demonstrate
-             * another component of the application.
-             */
-            var externalClient =
-                new ExternalServiceClient();
-
-            /*
-             * This call is intentionally not made automatically because
-             * the example endpoint is non-functional.
-             */
-            _ = externalClient;
-
-            await Task.CompletedTask;
+            catch (Exception)
+            {
+                Console.Error.WriteLine(
+                    "An unexpected application error occurred.");
+            }
         }
     }
 }
